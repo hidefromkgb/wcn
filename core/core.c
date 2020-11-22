@@ -313,7 +313,7 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
     struct WL3H {           // Main Header
         uint32_t offsPart;  // offset of the Part Table
         uint32_t offsUnk;   // offset to some block of unknown purpose, commonly close to the vertex data
-        uint32_t null1;     // usually equals 0
+        uint32_t offsCtb;   // the game refers to this value as 'offset to colitab', purpose unknown
         uint32_t offsTail;  // offset to some array at the very end of the file
 
         uint32_t numPart;   // size of the Part Table
@@ -322,7 +322,7 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
         uint32_t numPrim;   // total primitive count
 
         uint32_t unk1[9];   // UNKNOWN
-        uint16_t unk2[6];   // UNKNOWN; tightly packed, may happen to be uint8_t`s
+        uint32_t unk2[3];   // UNKNOWN
 
         uint8_t name[16];   // name of the model
         uint16_t hdrSize;   // remaining header size
@@ -340,13 +340,18 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
         uint32_t numVert;   // vertex count for this part
         uint32_t numPrim;   // primitive count for this part
 
-        uint32_t unk1[3];   // UNKNOWN
+        uint32_t unk1[3];   // UNKNOWN, probably a vector
 
         uint32_t offsX;     // offset of the part in the model: X
         uint32_t offsY;     // offset of the part in the model: Y
         uint32_t offsZ;     // offset of the part in the model: Z
 
-        uint32_t unk2[8];   // UNKNOWN
+        uint32_t unk2[3];   // UNKNOWN, probably a vector
+        uint32_t unk3;      // UNKNOWN
+
+        uint16_t always0C;  // theoretically should be the size of unk6, but seems to be fixed
+        uint16_t unk5;      // UNKNOWN
+        uint32_t unk6[3];   // UNKNOWN, [2] gets initialized with '-2'
 
         uint8_t tex[12];    // texture ID
 
@@ -396,12 +401,11 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
         PutTag((char*)part - file + 100, (char*)part - file + 101, 0, 0x901090, "Part: tail size");
         PutTag((char*)part - file + 102, (char*)part - file + 103, 0, 0x901090, "Part: tail objs");
 
-        fptr = (char*)part + U32_SWAP(part->qidx) + 2 * sizeof(uint16_t);  // also skipping two counters
+        fptr = (char*)part + U32_SWAP(part->qidx) + 2;
 
-        PutTag(fptr - file - 4, fptr - file - 3, 0, 0xCF5C00, "triangle count");
-        PutTag(fptr - file - 2, fptr - file - 1, 0, 0xCF5C00, "quad count (\?\?\?)");
+        PutTag(fptr - file - 2, fptr - file - 1, 0, 0xCF5C00, "triangle count");
 
-        long tri = U16_SWAP(((uint16_t*)fptr)[-2]), qua = U32_SWAP(part->numPrim) - tri;
+        long tri = U16_SWAP(((uint16_t*)fptr)[-1]);
         for (long iter = 0; iter < tri; iter++) {
             ((GLuint*)pind->pdat)[cind + iter * 4 + 0] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 0]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 1] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 1]) >> 1);
@@ -410,12 +414,17 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
             PutTag(fptr - file + iter * 6, fptr - file + iter * 6 + 5, 0, 0xCF5C00, "");
         }
         cind += tri * 4;
+        fptr += tri * 6 + 2;
+
+        PutTag(fptr - file - 2, fptr - file - 1, 0, 0xCF5C00, "quad count");
+
+        long qua = U16_SWAP(((uint16_t*)fptr)[-1]);
         for (long iter = 0; iter < qua; iter++) {
             ((GLuint*)pind->pdat)[cind + iter * 4 + 0] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 0]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 1] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 1]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 2] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 2]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 3] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 3]) >> 1);
-            PutTag(fptr - file + tri * 6 + iter * 8, fptr - file + tri * 6 + iter * 8 + 7, 0, 0xCF5C00, "");
+            PutTag(fptr - file + iter * 8, fptr - file + iter * 8 + 7, 0, 0xCF5C00, "");
         }
         cind += qua * 4;
 
