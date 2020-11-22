@@ -1,0 +1,9 @@
+[submodule "macos/mac_load"]
+	path = macos/mac_load
+	url = https://github.com/hidefromkgb/mac_load
+[submodule "core/vec_math"]
+	path = core/vec_math
+	url = https://github.com/hidefromkgb/vec_math
+[submodule "core/ogl_load"]
+	path = core/ogl_load
+	url = https://github.com/hidefromkgb/ogl_load
