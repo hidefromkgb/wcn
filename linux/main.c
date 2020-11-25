@@ -194,7 +194,7 @@ int main(int argc, char *argv[]) {
     gtk_widget_realize(data.gwnd);
 
     pGLD = gtk_widget_gl_begin(data.gwnd);
-    data.engc = cMakeEngine(argv[1]);
+    data.engc = cMakeEngine(argv[1], argc >= 3);
     gdk_gl_drawable_gl_end(pGLD);
 
     gtk_widget_set_app_paintable(data.gwnd, TRUE);

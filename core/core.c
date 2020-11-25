@@ -204,10 +204,11 @@ char *rLoadFile(char *name, long *size) {
 #define I32_SWAP(v) ((int32_t)(U16_SWAP((uint32_t)(v) >> 16) | (U16_SWAP(v) << 16)))
 #define U32_SWAP(v) ((uint32_t)I32_SWAP(v))
 
-VEC_T3FV ReadI32T3F(char *pos) {
-    return (VEC_T3FV){{ 1024.f / 0x7FFFFFFF * I32_SWAP(((int32_t*)pos)[0]),
-                       -1024.f / 0x7FFFFFFF * I32_SWAP(((int32_t*)pos)[1]),
-                       -1024.f / 0x7FFFFFFF * I32_SWAP(((int32_t*)pos)[2])}};
+VEC_T3FV ReadI32T3F(VEC_T4IV *vec) {
+    float scale = 0.5 / I32_SWAP(vec->x);
+    return (VEC_T3FV){{ scale * I32_SWAP(vec->y),
+                       -scale * I32_SWAP(vec->z),
+                       -scale * I32_SWAP(vec->w)}};
 }
 
 VEC_T3FV ReadI16T3F(char *pos) {
@@ -312,8 +313,8 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
     #pragma pack(push, 1)
     struct WL3H {           // Main Header
         uint32_t offsPart;  // offset of the Part Table
-        uint32_t offsUnk;   // offset to some block of unknown purpose, commonly close to the vertex data
-        uint32_t offsCtb;   // the game refers to this value as 'offset to colitab', purpose unknown
+        uint32_t offsUnk;   // offset to some (W,W,D,D,D,D) block of unknown purpose
+        uint32_t offsColi;  // the game refers to this value as 'offset to colitab', purpose unknown
         uint32_t offsTail;  // offset to some array at the very end of the file
 
         uint32_t numPart;   // size of the Part Table
@@ -328,23 +329,20 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
         uint16_t hdrSize;   // remaining header size
         uint16_t hdrObjs;   // remaining header object count
     } *wl3h;
-
     struct PART {           // Part Table
-        uint32_t qidx;      // offset: prim indices
+        uint32_t pidx;      // offset: prim indices
         uint32_t vert;      // offset: vertices
         uint32_t texc;      // offset: texture coords
-        uint32_t qnrm;      // offset: per-prim normals
-        uint32_t vnrn;      // offset: per-vertex normals
+        uint32_t pnrm;      // offset: per-prim normals
+        uint32_t vnrm;      // offset: per-vertex normals
         uint32_t attr;      // offset: prim attributes
 
         uint32_t numVert;   // vertex count for this part
         uint32_t numPrim;   // primitive count for this part
 
-        uint32_t unk1[3];   // UNKNOWN, probably a vector
+        uint32_t unk1[2];   // UNKNOWN
 
-        uint32_t offsX;     // offset of the part in the model: X
-        uint32_t offsY;     // offset of the part in the model: Y
-        uint32_t offsZ;     // offset of the part in the model: Z
+        VEC_T4IV offset;    // offsets: [scale, X, Y, Z]
 
         uint32_t unk2[3];   // UNKNOWN, probably a vector
         uint32_t unk3;      // UNKNOWN
@@ -377,33 +375,63 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
     pver->type = OGL_UNI_T3FV;
     pver->pdat = calloc(1, pver->cdat = U32_SWAP(wl3h->numVert) * sizeof(VEC_T3FV));
 
-    PutTag(0, 3, 0, 0x55C6C3, "");
-    PutTag((char*)&wl3h->numVert - file, (char*)&wl3h->numVert - file + 3, 0, 0xCE5C00, "Total vertex count");
-    PutTag((char*)&wl3h->numPrim - file, (char*)&wl3h->numPrim - file + 3, 0, 0xCE5C00, "Total prim count");
+    PutTag((char*)&wl3h->offsPart - file, (char*)&wl3h->offsPart - file + 3, 0x000000, 0x55C6C3, "part table offset");
+    PutTag((char*)&wl3h->offsUnk - file, (char*)&wl3h->offsUnk - file + 3, 0x000000, 0x906000, "unknown struct offset");
+    PutTag((char*)&wl3h->offsColi - file, (char*)&wl3h->offsColi - file + 3, 0x000000, 0xF03030, "colitab offset");
+    PutTag((char*)&wl3h->offsTail - file, (char*)&wl3h->offsTail - file + 3, 0x000000, 0x9A1490, "tail offset");
+    PutTag((char*)&wl3h->numPart - file, (char*)&wl3h->numPart - file + 3, 0x000000, 0x55C6C3, "part table size");
+    PutTag((char*)&wl3h->numVert - file, (char*)&wl3h->numVert - file + 3, 0x000000, 0x204A87, "total vertex count");
+    PutTag((char*)&wl3h->numPrim - file, (char*)&wl3h->numPrim - file + 3, 0x000000, 0xCF5C00, "total prim count");
+    PutTag((char*)&wl3h->name - file, (char*)&wl3h->name - file + 15, 0x000000, 0x5ED505, "name");
+
+    PutTag((char*)&wl3h->hdrSize - file, (char*)&wl3h->hdrSize - file + 1, 0x000000, 0xEFD43B, "header size");
+    PutTag((char*)&wl3h->hdrSize - file + 2, (char*)&wl3h->hdrSize - file + 3, 0x000000, 0xEFD43B, "header objs");
+    PutTag((char*)&wl3h->hdrSize - file + 4, (char*)&wl3h->hdrSize - file + U16_SWAP(wl3h->hdrSize) - 1,
+           0x000000, 0xEFD43B, "header");
+
+    fptr = (char*)file + U32_SWAP(wl3h->offsUnk);
+    for (long iter = 0, size = (fptr != file) ? U32_SWAP(wl3h->numPart) * 2 - 1 : 0; iter < size; iter++) {
+        PutTag(fptr - file + iter * 20, fptr - file + iter * 20 + 19, 0x000000, (iter & 1) ? 0x906000 : 0xF0C070, "");
+    }
+
+    fptr = (char*)file + U32_SWAP(wl3h->offsColi);
+    if (fptr != file)
+        PutTag(fptr - file, fptr - file + 1, 0x000000, 0xF03030, "colitab");
+
+    fptr = (char*)file + U32_SWAP(wl3h->offsTail) + 2;
+    PutTag(fptr - file - 2, fptr - file - 1, 0x000000, 0x9A1490, "tail size");
+    PutTag(fptr - file, fptr - file + U16_SWAP(((uint16_t*)fptr)[-1]) * 2 - 1, 0x000000, 0x9A1490, "tail");
 
     // at the Part Table offset there`s a vector prepended by its total byte size that contains offsets to Part Tables
     // (except the last one - it comes directly after the said vector)
     for (long offs = U32_SWAP(wl3h->offsPart), size = U32_SWAP(*(uint32_t*)(file + offs)), iter = 4;
          iter <= size; iter += 4) {
         if (iter == 4)
-            PutTag(offs, offs + size - 1, 0, 0x55C6C3, "");
+            PutTag(offs, offs + size - 1, 0x000000, 0x55C6C3, "part table");
         part = (void*)(file + offs + ((iter == size) ? size : U32_SWAP(*(uint32_t*)(file + offs + iter))));
 
-        PutTag((char*)part - file +   0, (char*)part - file +   3, 0, 0x9070E0, "Part: prim indices");
-        PutTag((char*)part - file +   4, (char*)part - file +   7, 0, 0x9070E0, "Part: vertices");
-        PutTag((char*)part - file +   8, (char*)part - file +  11, 0, 0x9070E0, "Part: texcoords");
-        PutTag((char*)part - file +  12, (char*)part - file +  15, 0, 0x9070E0, "Part: prim normals");
-        PutTag((char*)part - file +  16, (char*)part - file +  19, 0, 0x9070E0, "Part: vertex normals");
-        PutTag((char*)part - file +  20, (char*)part - file +  23, 0, 0x9070E0, "Part: prim attrs");
-        PutTag((char*)part - file +  24, (char*)part - file +  27, 0, 0x9070E0, "Part: vertex count");
-        PutTag((char*)part - file +  28, (char*)part - file +  31, 0, 0x9070E0, "Part: prim count");
-        PutTag((char*)part - file +  88, (char*)part - file +  99, 0, 0x9070E0, "Part: texture");
-        PutTag((char*)part - file + 100, (char*)part - file + 101, 0, 0x901090, "Part: tail size");
-        PutTag((char*)part - file + 102, (char*)part - file + 103, 0, 0x901090, "Part: tail objs");
+        PutTag((char*)part - file +   0, (char*)part - file +   3, 0x0000FF, 0x9070E0, "part: prim indices");
+        PutTag((char*)part - file +   4, (char*)part - file +   7, 0x000000, 0x9070E0, "part: vertices");
+        PutTag((char*)part - file +   8, (char*)part - file +  11, 0x000000, 0x9070E0, "part: texcoords");
+        PutTag((char*)part - file +  12, (char*)part - file +  15, 0x000000, 0x9070E0, "part: prim normals");
+        PutTag((char*)part - file +  16, (char*)part - file +  19, 0x000000, 0x9070E0, "part: vertex normals");
+        PutTag((char*)part - file +  20, (char*)part - file +  23, 0x000000, 0x9070E0, "part: prim attrs");
+        PutTag((char*)part - file +  24, (char*)part - file +  27, 0x000000, 0x204A87, "part: vertex count");
+        PutTag((char*)part - file +  28, (char*)part - file +  31, 0x000000, 0xCF5C00, "part: prim count");
+        PutTag((char*)part - file +  32, (char*)part - file +  43, 0x000000, 0x41F356, "part: (D,D, part scale)");
+        PutTag((char*)part - file +  44, (char*)part - file +  55, 0x000000, 0x41F356, "part: offsets (X,Y,Z)");
+        PutTag((char*)part - file +  56, (char*)part - file +  67, 0x000000, 0x41F356, "part: (D,D,D)");
+        PutTag((char*)part - file +  68, (char*)part - file +  71, 0x000000, 0x557C2A, "part: (usually 0) (?)");
+        PutTag((char*)part - file +  72, (char*)part - file +  87, 0x000000, 0x557C2A, "part: (W,W,D,D,D)");
+        PutTag((char*)part - file +  88, (char*)part - file +  99, 0x000000, 0x9070E0, "part: texture");
+        PutTag((char*)part - file + 100, (char*)part - file + 101, 0x000000, 0x901090, "part: tail size");
+        PutTag((char*)part - file + 102, (char*)part - file + 103, 0x000000, 0x901090, "part: tail objs");
 
-        fptr = (char*)part + U32_SWAP(part->qidx) + 2;
+        /// indices: triangles
 
-        PutTag(fptr - file - 2, fptr - file - 1, 0, 0xCF5C00, "triangle count");
+        fptr = (char*)part + U32_SWAP(part->pidx) + 2;
+
+        PutTag(fptr - file - 2, fptr - file - 1, 0x0000FF, 0xFCAF3E, "triangle count");
 
         long tri = U16_SWAP(((uint16_t*)fptr)[-1]);
         for (long iter = 0; iter < tri; iter++) {
@@ -411,12 +439,14 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
             ((GLuint*)pind->pdat)[cind + iter * 4 + 1] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 1]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 2] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 2]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 3] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 2]) >> 1);
-            PutTag(fptr - file + iter * 6, fptr - file + iter * 6 + 5, 0, 0xCF5C00, "");
+            PutTag(fptr - file + iter * 6, fptr - file + iter * 6 + 5, 0x000000, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
         }
         cind += tri * 4;
         fptr += tri * 6 + 2;
 
-        PutTag(fptr - file - 2, fptr - file - 1, 0, 0xCF5C00, "quad count");
+        /// indices: quads
+
+        PutTag(fptr - file - 2, fptr - file - 1, 0x000000, (tri & 1) ? 0xFCAF3E : 0xCF5C00, "quad count");
 
         long qua = U16_SWAP(((uint16_t*)fptr)[-1]);
         for (long iter = 0; iter < qua; iter++) {
@@ -424,18 +454,58 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
             ((GLuint*)pind->pdat)[cind + iter * 4 + 1] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 1]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 2] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 2]) >> 1);
             ((GLuint*)pind->pdat)[cind + iter * 4 + 3] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 3]) >> 1);
-            PutTag(fptr - file + iter * 8, fptr - file + iter * 8 + 7, 0, 0xCF5C00, "");
+            PutTag(fptr - file + iter * 8, fptr - file + iter * 8 + 7,
+                   0x000000, ((tri + iter) & 1) ? 0xCF5C00 : 0xFCAF3E, "");
         }
         cind += qua * 4;
 
+        long vert = U32_SWAP(part->numVert), prim = U32_SWAP(part->numPrim);
+
+        /// vertices
+
         fptr = (char*)part + U32_SWAP(part->vert);
-        VEC_T3FV plus = ReadI32T3F((char*)&part->offsX);
-        for (long iter = 0, size = U32_SWAP(part->numVert); iter < size; iter++) {
+        VEC_T3FV plus = ReadI32T3F(&part->offset);
+        float scale = (float)I32_SWAP(part->offset.x) / 0x7FFFF;
+        for (long iter = 0; iter < vert; iter++) {
             ((VEC_T3FV*)pver->pdat)[cver + iter] = ReadI16T3F(fptr + iter * 3 * sizeof(uint16_t));
             VEC_V3AddV(&((VEC_T3FV*)pver->pdat)[cver + iter], &plus);
-            PutTag(fptr - file + iter * 6, fptr - file + (iter + 1) * 6 - 1, 0, 0x729FCF, "");
+            VEC_V3MulC(&((VEC_T3FV*)pver->pdat)[cver + iter], scale);
+            PutTag(fptr - file + iter * 6, fptr - file + (iter + 1) * 6 - 1,
+                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
         }
-        cver += U32_SWAP(part->numVert);
+        cver += vert;
+
+        /// texcoords
+
+        fptr = (char*)part + U32_SWAP(part->texc) + 2;
+        PutTag(fptr - file - 2, fptr - file - 1, 0x0000FF, 0xFCAF3E, "texcoord count, never used");
+        for (long iter = 0; iter < tri + qua; iter++) {
+            PutTag(fptr - file + iter * 4, fptr - file + iter * 4 + 3, 0x000000, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
+        }
+
+        /// prim normals
+
+        fptr = (char*)part + U32_SWAP(part->pnrm);
+        for (long iter = 0; iter < prim; iter++) {
+            PutTag(fptr - file + iter * 3, fptr - file + iter * 3 + 2,
+                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
+        }
+
+        /// vertex normals
+
+        fptr = (char*)part + U32_SWAP(part->vnrm);
+        for (long iter = 0; iter < tri * 3 + qua * 4; iter++) {
+            PutTag(fptr - file + iter * 3, fptr - file + iter * 3 + 2,
+                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
+        }
+
+        /// prim attributes
+
+        fptr = (char*)part + U32_SWAP(part->attr);
+        for (long iter = 0; iter < prim; iter++) {
+            PutTag(fptr - file + iter * 2, fptr - file + iter * 2 + 1,
+                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
+        }
     }
 
     printf("  </filename>\n</wxHexEditor_XML_TAG>\n");
@@ -446,7 +516,7 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
 
 
 
-ENGC *cMakeEngine(char *name) {
+ENGC *cMakeEngine(char *name, bool xmlOnly) {
     ENGC *retn;
 
     retn = calloc(1, sizeof(*retn));
@@ -481,6 +551,12 @@ ENGC *cMakeEngine(char *name) {
     free(attr[0].pdat);
     free(attr[1].pdat);
     *OGL_BindTex(retn->fvbo, 0, OGL_TEX_NSET) = MakeTileTex(9, 5, 1);
+
+    if (xmlOnly) {
+        cFreeEngine(&retn);
+        exit(0);
+    }
+
     return retn;
 }
 

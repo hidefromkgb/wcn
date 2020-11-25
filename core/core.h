@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdint.h>
 
 
@@ -68,4 +69,4 @@ void cKbdInput(ENGC *engc, uint8_t code, long down);
 void cResizeWindow(ENGC *engc, long xdim, long ydim);
 void cRedrawWindow(ENGC *engc);
 void cFreeEngine(ENGC **engc);
-ENGC *cMakeEngine(char *name);
+ENGC *cMakeEngine(char *name, bool xmlOnly);
