@@ -7,6 +7,9 @@
 
 
 
+#define STRINGIFY(D) STRINGIFY_(D)
+#define STRINGIFY_(D) #D
+
 #define DEF_FANG  0.01  /** Default angular step             **/
 #define DEF_FTRN  0.05  /** Default translational step       **/
 
@@ -27,31 +30,6 @@ struct ENGC {
 
     GLboolean keys[KEY_ALL_KEYS];
 };
-
-
-
-char *shdr[] = {
-/** === main vertex shader **/
-"uniform mat4 mMVP;"
-"attribute vec3 vert;"
-"varying vec3 vpos;"
-"void main() {"
-    "vpos = vert;"
-    "gl_Position = mMVP * vec4(vert, 1.0);"
-"}",
-/** === main pixel shader **/
-"uniform sampler2D tile;"
-"varying vec3 vpos;"
-"void main() {"
-    "vec3 ctex;"
-    "if (abs(vpos.x) > 0.999)"
-        "ctex = vpos.yzx;"
-    "else if (abs(vpos.y) > 0.999)"
-        "ctex = vpos.zxy;"
-    "else if (abs(vpos.z) > 0.999)"
-        "ctex = vpos.xyz;"
-    "gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);"
-"}"};
 
 
 
@@ -98,7 +76,6 @@ void cUpdateState(ENGC *engc) {
     VEC_T3FV vadd;
     VEC_T2FV fang;
 
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     if (engc->keys[KEY_W] ^ engc->keys[KEY_S]) {
         fang = (VEC_T2FV){{engc->fang.x + 0.5 * M_PI, engc->fang.y}};
         VEC_V3FromAng(&vadd, &fang);
@@ -172,6 +149,7 @@ void cRedrawWindow(ENGC *engc) {
     VEC_M4Multiply(engc->proj->curr, mmtx, engc->view->curr);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+//    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     OGL_DrawVBO(engc->fvbo, 0, 0);
 }
 
@@ -223,14 +201,14 @@ VEC_T3FV ReadI8T3F(char *pos) {
                        -1.f / 0x7F * ((int8_t*)pos)[2]}};
 }
 
-void PutTag(long bgn, long end, uint32_t fclr, uint32_t nclr, char *name) {
+void PutTag(long bgn, long len, uint32_t fclr, uint32_t nclr, char *name) {
     static long id = 0;
     printf("    <TAG id=\"%ld\">\n      <start_offset>%ld</start_offset>\n      <end_offset>%ld</end_offset>\n"
            "      <tag_text>%s</tag_text>\n      <font_colour>#%06X</font_colour>\n"
-           "      <note_colour>#%06X</note_colour>\n    </TAG>\n", id++, bgn, end, name, fclr, nclr);
+           "      <note_colour>#%06X</note_colour>\n    </TAG>\n", id++, bgn, bgn + len - 1, name, fclr, nclr);
 }
 
-GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
+void ImportWL3(OGL_UNIF *uvbo, char *name, bool xmlOnly) {
 // Common values for 'name':
 
 // "r4back01/r4back01.wl3"  // level 1 (the dump), part 1
@@ -295,14 +273,14 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
 // "barrel/barrel.wl3"      // barrel
 // "bjarne01/bjarne01.wl3"  // lorry
 
-// "ebike/ebike.wl3"        // player
+// "ebike/ebike.wl3"        // bike hull
 // "fjende1/fjende1.wl3"    // enemy #1
 // "fjende2/fjende2.wl3"    // enemy #2
 // "fjende3/fjende3.wl3"    // enemy #3
 // "fjende4/fjende4.wl3"    // enemy #4
 // "fjende5/fjende5.wl3"    // enemy #5
 // "pokal/pokal.wl3"        // championship cup
-// "ting/ting.wl3"          // bike material (glow/flash)
+// "ting/ting.wl3"          // player
 
 // "pickbost/pickbost.wl3"  // booster
 // "pickjmp/pickjmp.wl3"    // jumper
@@ -359,103 +337,116 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
     #pragma pack(pop)
 
     char *fptr, *file = rLoadFile(name, 0);
-    long cind = 0, cver = 0;
+    long cind = 0;
 
     if (!file) {
         printf("'%s': cannot load the file! Exiting.\n", name);
         exit(2);
     }
 
-    printf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<wxHexEditor_XML_TAG>\n  <filename path=\"%s\">\n", name);
+    if (xmlOnly)
+        printf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<wxHexEditor_XML_TAG>\n  <filename path=\"%s\">\n", name);
 
     wl3h = (void*)file;
 
-    pind->type = 0;
-    pind->pdat = calloc(1, pind->cdat = U32_SWAP(wl3h->numPrim) * 4 * sizeof(GLuint));
-    pver->type = OGL_UNI_T3FV;
-    pver->pdat = calloc(1, pver->cdat = U32_SWAP(wl3h->numVert) * sizeof(VEC_T3FV));
+    uvbo[0].type = 0;
+    uvbo[1].type = OGL_UNI_T3FV;
+    uvbo[2].type = OGL_UNI_T3FV;
+    uvbo[3].type = OGL_UNI_T3FV;
+    uvbo[0].pdat = calloc(1, uvbo[0].cdat = U32_SWAP(wl3h->numPrim) * 4 * sizeof(GLuint));
+    uvbo[1].pdat = calloc(1, uvbo[1].cdat = U32_SWAP(wl3h->numPrim) * 4 * sizeof(VEC_T3FV));
+    uvbo[2].pdat = calloc(1, uvbo[2].cdat = U32_SWAP(wl3h->numPrim) * 4 * sizeof(VEC_T3FV));
+    uvbo[3].pdat = calloc(1, uvbo[3].cdat = U32_SWAP(wl3h->numPrim) * 4 * sizeof(VEC_T3FV));
 
-    PutTag((char*)&wl3h->offsPart - file, (char*)&wl3h->offsPart - file + 3, 0x000000, 0x55C6C3, "part table offset");
-    PutTag((char*)&wl3h->offsUnk - file, (char*)&wl3h->offsUnk - file + 3, 0x000000, 0x906000, "unknown struct offset");
-    PutTag((char*)&wl3h->offsColi - file, (char*)&wl3h->offsColi - file + 3, 0x000000, 0xF03030, "colitab offset");
-    PutTag((char*)&wl3h->offsTail - file, (char*)&wl3h->offsTail - file + 3, 0x000000, 0x9A1490, "tail offset");
-    PutTag((char*)&wl3h->numPart - file, (char*)&wl3h->numPart - file + 3, 0x000000, 0x55C6C3, "part table size");
-    PutTag((char*)&wl3h->numVert - file, (char*)&wl3h->numVert - file + 3, 0x000000, 0x204A87, "total vertex count");
-    PutTag((char*)&wl3h->numPrim - file, (char*)&wl3h->numPrim - file + 3, 0x000000, 0xCF5C00, "total prim count");
-    PutTag((char*)&wl3h->name - file, (char*)&wl3h->name - file + 15, 0x000000, 0x5ED505, "name");
+    if (xmlOnly) {
+        PutTag((char*)&wl3h->offsPart - file, 4, 0x000000, 0x55C6C3, "part table offset");
+        PutTag((char*)&wl3h->offsUnk - file, 4, 0x000000, 0x906000, "unknown struct offset");
+        PutTag((char*)&wl3h->offsColi - file, 4, 0x000000, 0xF03030, "colitab offset");
+        PutTag((char*)&wl3h->offsTail - file, 4, 0x000000, 0x9A1490, "tail offset");
+        PutTag((char*)&wl3h->numPart - file, 4, 0x000000, 0x55C6C3, "part table size");
+        PutTag((char*)&wl3h->numVert - file, 4, 0x000000, 0x204A87, "total vertex count");
+        PutTag((char*)&wl3h->numPrim - file, 4, 0x000000, 0xCF5C00, "total prim count");
+        PutTag((char*)&wl3h->name - file, 16, 0x000000, 0x5ED505, "name");
 
-    PutTag((char*)&wl3h->hdrSize - file, (char*)&wl3h->hdrSize - file + 1, 0x000000, 0xEFD43B, "header size");
-    PutTag((char*)&wl3h->hdrSize - file + 2, (char*)&wl3h->hdrSize - file + 3, 0x000000, 0xEFD43B, "header objs");
-    PutTag((char*)&wl3h->hdrSize - file + 4, (char*)&wl3h->hdrSize - file + U16_SWAP(wl3h->hdrSize) - 1,
-           0x000000, 0xEFD43B, "header");
+        PutTag((char*)&wl3h->hdrSize - file, 2, 0x000000, 0xEFD43B, "header size");
+        PutTag((char*)&wl3h->hdrSize - file + 2, 2, 0x000000, 0xEFD43B, "header objs");
+        PutTag((char*)&wl3h->hdrSize - file + 4, U16_SWAP(wl3h->hdrSize), 0x000000, 0xEFD43B, "header");
 
-    fptr = (char*)file + U32_SWAP(wl3h->offsUnk);
-    for (long iter = 0, size = (fptr != file) ? U32_SWAP(wl3h->numPart) * 2 - 1 : 0; iter < size; iter++) {
-        PutTag(fptr - file + iter * 20, fptr - file + iter * 20 + 19, 0x000000, (iter & 1) ? 0x906000 : 0xF0C070, "");
+        fptr = (char*)file + U32_SWAP(wl3h->offsUnk);
+        for (long iter = 0, size = (fptr != file) ? U32_SWAP(wl3h->numPart) * 2 - 1 : 0; iter < size; iter++) {
+            PutTag(fptr - file + iter * 20, 20, 0x000000, (iter & 1) ? 0x906000 : 0xF0C070, "");
+        }
     }
 
     fptr = (char*)file + U32_SWAP(wl3h->offsColi);
-    if (fptr != file)
-        PutTag(fptr - file, fptr - file + 1, 0x000000, 0xF03030, "colitab");
+    if ((fptr != file) && xmlOnly)
+        PutTag(fptr - file, 2, 0x000000, 0xF03030, "colitab");
 
     fptr = (char*)file + U32_SWAP(wl3h->offsTail) + 2;
-    PutTag(fptr - file - 2, fptr - file - 1, 0x000000, 0x9A1490, "tail size");
-    PutTag(fptr - file, fptr - file + U16_SWAP(((uint16_t*)fptr)[-1]) * 2 - 1, 0x000000, 0x9A1490, "tail");
+    if (xmlOnly) {
+        PutTag(fptr - file - 2, 2, 0x000000, 0x9A1490, "tail size");
+        PutTag(fptr - file, U16_SWAP(((uint16_t*)fptr)[-1]) * 2, 0x000000, 0x9A1490, "tail");
+    }
 
     // at the Part Table offset there`s a vector prepended by its total byte size that contains offsets to Part Tables
     // (except the last one - it comes directly after the said vector)
     for (long offs = U32_SWAP(wl3h->offsPart), size = U32_SWAP(*(uint32_t*)(file + offs)), iter = 4;
          iter <= size; iter += 4) {
-        if (iter == 4)
-            PutTag(offs, offs + size - 1, 0x000000, 0x55C6C3, "part table");
+        if ((iter == 4) && xmlOnly)
+            PutTag(offs, size, 0x000000, 0x55C6C3, "part table");
         part = (void*)(file + offs + ((iter == size) ? size : U32_SWAP(*(uint32_t*)(file + offs + iter))));
 
-        PutTag((char*)part - file +   0, (char*)part - file +   3, 0x0000FF, 0x9070E0, "part: prim indices");
-        PutTag((char*)part - file +   4, (char*)part - file +   7, 0x000000, 0x9070E0, "part: vertices");
-        PutTag((char*)part - file +   8, (char*)part - file +  11, 0x000000, 0x9070E0, "part: texcoords");
-        PutTag((char*)part - file +  12, (char*)part - file +  15, 0x000000, 0x9070E0, "part: prim normals");
-        PutTag((char*)part - file +  16, (char*)part - file +  19, 0x000000, 0x9070E0, "part: vertex normals");
-        PutTag((char*)part - file +  20, (char*)part - file +  23, 0x000000, 0x9070E0, "part: prim attrs");
-        PutTag((char*)part - file +  24, (char*)part - file +  27, 0x000000, 0x204A87, "part: vertex count");
-        PutTag((char*)part - file +  28, (char*)part - file +  31, 0x000000, 0xCF5C00, "part: prim count");
-        PutTag((char*)part - file +  32, (char*)part - file +  43, 0x000000, 0x41F356, "part: (D,D, part scale)");
-        PutTag((char*)part - file +  44, (char*)part - file +  55, 0x000000, 0x41F356, "part: offsets (X,Y,Z)");
-        PutTag((char*)part - file +  56, (char*)part - file +  67, 0x000000, 0x41F356, "part: (D,D,D)");
-        PutTag((char*)part - file +  68, (char*)part - file +  71, 0x000000, 0x557C2A, "part: (usually 0) (?)");
-        PutTag((char*)part - file +  72, (char*)part - file +  87, 0x000000, 0x557C2A, "part: (W,W,D,D,D)");
-        PutTag((char*)part - file +  88, (char*)part - file +  99, 0x000000, 0x9070E0, "part: texture");
-        PutTag((char*)part - file + 100, (char*)part - file + 101, 0x000000, 0x901090, "part: tail size");
-        PutTag((char*)part - file + 102, (char*)part - file + 103, 0x000000, 0x901090, "part: tail objs");
+        if (xmlOnly) {
+            PutTag((char*)part - file +   0, 4, 0x0000FF, 0x9070E0, "part: prim indices");
+            PutTag((char*)part - file +   4, 4, 0x000000, 0x9070E0, "part: vertices");
+            PutTag((char*)part - file +   8, 4, 0x000000, 0x9070E0, "part: texcoords");
+            PutTag((char*)part - file +  12, 4, 0x000000, 0x9070E0, "part: prim normals");
+            PutTag((char*)part - file +  16, 4, 0x000000, 0x9070E0, "part: vertex normals");
+            PutTag((char*)part - file +  20, 4, 0x000000, 0x9070E0, "part: prim attrs");
+            PutTag((char*)part - file +  24, 4, 0x000000, 0x204A87, "part: vertex count");
+            PutTag((char*)part - file +  28, 4, 0x000000, 0xCF5C00, "part: prim count");
+            PutTag((char*)part - file +  32, 4 * 3, 0x000000, 0x41F356, "part: (D,D, part scale)");
+            PutTag((char*)part - file +  44, 4 * 3, 0x000000, 0x41F356, "part: offsets (X,Y,Z)");
+            PutTag((char*)part - file +  56, 4 * 3, 0x000000, 0x41F356, "part: (D,D,D)");
+            PutTag((char*)part - file +  68, 4, 0x000000, 0x557C2A, "part: (usually 0) (?)");
+            PutTag((char*)part - file +  72, 16, 0x000000, 0x557C2A, "part: (W,W,D,D,D)");
+            PutTag((char*)part - file +  88, 12, 0x000000, 0x9070E0, "part: texture");
+            PutTag((char*)part - file + 100, 2, 0x000000, 0x901090, "part: tail size");
+            PutTag((char*)part - file + 102, 2, 0x000000, 0x901090, "part: tail objs");
+        }
 
         /// indices: triangles
 
         fptr = (char*)part + U32_SWAP(part->pidx) + 2;
 
-        PutTag(fptr - file - 2, fptr - file - 1, 0x0000FF, 0xFCAF3E, "triangle count");
+        if (xmlOnly)
+            PutTag(fptr - file - 2, 2, 0x0000FF, 0xFCAF3E, "triangle count");
 
         long tri = U16_SWAP(((uint16_t*)fptr)[-1]);
         for (long iter = 0; iter < tri; iter++) {
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 0] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 0]) >> 1);
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 1] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 1]) >> 1);
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 2] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 2]) >> 1);
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 3] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 2]) >> 1);
-            PutTag(fptr - file + iter * 6, fptr - file + iter * 6 + 5, 0x000000, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 0] = (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 0]) >> 1);
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 1] = (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 1]) >> 1);
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 2] = (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 2]) >> 1);
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 3] = (U16_SWAP(((uint16_t*)fptr)[iter * 3 + 2]) >> 1);
+            if (xmlOnly)
+                PutTag(fptr - file + iter * 6, 6, 0x000000, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
         }
         cind += tri * 4;
         fptr += tri * 6 + 2;
 
         /// indices: quads
 
-        PutTag(fptr - file - 2, fptr - file - 1, 0x000000, (tri & 1) ? 0xFCAF3E : 0xCF5C00, "quad count");
+        if (xmlOnly)
+            PutTag(fptr - file - 2, 2, 0x000000, (tri & 1) ? 0xFCAF3E : 0xCF5C00, "quad count");
 
         long qua = U16_SWAP(((uint16_t*)fptr)[-1]);
         for (long iter = 0; iter < qua; iter++) {
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 0] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 0]) >> 1);
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 1] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 1]) >> 1);
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 2] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 2]) >> 1);
-            ((GLuint*)pind->pdat)[cind + iter * 4 + 3] = cver + (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 3]) >> 1);
-            PutTag(fptr - file + iter * 8, fptr - file + iter * 8 + 7,
-                   0x000000, ((tri + iter) & 1) ? 0xCF5C00 : 0xFCAF3E, "");
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 0] = (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 0]) >> 1);
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 1] = (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 1]) >> 1);
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 2] = (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 2]) >> 1);
+            ((GLuint*)uvbo[0].pdat)[cind + iter * 4 + 3] = (U16_SWAP(((uint16_t*)fptr)[iter * 4 + 3]) >> 1);
+            if (xmlOnly)
+                PutTag(fptr - file + iter * 8, 8, 0x000000, ((tri + iter) & 1) ? 0xCF5C00 : 0xFCAF3E, "");
         }
         cind += qua * 4;
 
@@ -466,52 +457,84 @@ GLenum ImportWL3(OGL_UNIF *pind, OGL_UNIF *pver, char *name) {
         fptr = (char*)part + U32_SWAP(part->vert);
         VEC_T3FV plus = ReadI32T3F(&part->offset);
         float scale = (float)I32_SWAP(part->offset.x) / 0x7FFFF;
-        for (long iter = 0; iter < vert; iter++) {
-            ((VEC_T3FV*)pver->pdat)[cver + iter] = ReadI16T3F(fptr + iter * 3 * sizeof(uint16_t));
-            VEC_V3AddV(&((VEC_T3FV*)pver->pdat)[cver + iter], &plus);
-            VEC_V3MulC(&((VEC_T3FV*)pver->pdat)[cver + iter], scale);
-            PutTag(fptr - file + iter * 6, fptr - file + (iter + 1) * 6 - 1,
-                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
+        for (long iter = 0; iter < prim; iter++) {
+            for (long indx = 0; indx < 4; indx++) {
+                VEC_T3FV *base = ((VEC_T3FV*)uvbo[1].pdat) + cind - prim * 4 + iter * 4 + indx;
+                *base = ReadI16T3F(fptr + ((GLuint*)uvbo[0].pdat)[cind - prim * 4 + iter * 4 + indx] * 3 * 2);
+                VEC_V3AddV(base, &plus);
+                VEC_V3MulC(base, scale);
+            }
         }
-        cver += vert;
+        for (long iter = (xmlOnly) ? 0 : vert; iter < vert; iter++)
+            PutTag(fptr - file + iter * 6, 6, (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
 
         /// texcoords
 
         fptr = (char*)part + U32_SWAP(part->texc) + 2;
-        PutTag(fptr - file - 2, fptr - file - 1, 0x0000FF, 0xFCAF3E, "texcoord count, never used");
-        for (long iter = 0; iter < tri + qua; iter++) {
-            PutTag(fptr - file + iter * 4, fptr - file + iter * 4 + 3, 0x000000, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
+        if (xmlOnly)
+            PutTag(fptr - file - 2, 2, 0x0000FF, 0xFCAF3E, "texcoord count, never used");
+        for (long iter = 0; iter < prim; iter++) {
+            if (xmlOnly)
+                PutTag(fptr - file + iter * 4, 4, 0x000000, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
         }
 
         /// prim normals
 
         fptr = (char*)part + U32_SWAP(part->pnrm);
         for (long iter = 0; iter < prim; iter++) {
-            PutTag(fptr - file + iter * 3, fptr - file + iter * 3 + 2,
-                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
+            VEC_T3FV *base = ((VEC_T3FV*)uvbo[2].pdat) + cind - prim * 4 + iter * 4;
+            VEC_T3FV norm = ReadI8T3F(fptr + iter * 3);
+            VEC_V3MulC(&norm, -1.f);
+            VEC_V3Normalize(&norm);
+            base[0] = base[1] = base[2] = base[3] = norm;
+            if (xmlOnly)
+                PutTag(fptr - file + iter * 3, 3, (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
         }
 
         /// vertex normals
 
         fptr = (char*)part + U32_SWAP(part->vnrm);
-        for (long iter = 0; iter < tri * 3 + qua * 4; iter++) {
-            PutTag(fptr - file + iter * 3, fptr - file + iter * 3 + 2,
-                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0x204A87 : 0x729FCF, "");
+        for (long iter = 0; iter < tri; iter++) {
+            if (xmlOnly) {
+                PutTag(fptr - file + iter * 3 * 3 + 0, 3,
+                      (iter * 3 + 0) ? 0x000000 : 0x0000FF, ((iter * 3 + 0) & 1) ? 0x204A87 : 0x729FCF, "");
+                PutTag(fptr - file + iter * 3 * 3 + 3, 3,
+                      (iter * 3 + 1) ? 0x000000 : 0x0000FF, ((iter * 3 + 1) & 1) ? 0x204A87 : 0x729FCF, "");
+                PutTag(fptr - file + iter * 3 * 3 + 6, 3,
+                      (iter * 3 + 2) ? 0x000000 : 0x0000FF, ((iter * 3 + 2) & 1) ? 0x204A87 : 0x729FCF, "");
+            }
+        }
+        fptr += tri * 3 * 3;
+        for (long iter = 0; iter < qua; iter++) {
+            if (xmlOnly) {
+                PutTag(fptr - file + iter * 4 * 3 + 0, 3, 0x000000, ((iter * 4 + 0) & 1) ? 0x204A87 : 0x729FCF, "");
+                PutTag(fptr - file + iter * 4 * 3 + 3, 3, 0x000000, ((iter * 4 + 1) & 1) ? 0x204A87 : 0x729FCF, "");
+                PutTag(fptr - file + iter * 4 * 3 + 6, 3, 0x000000, ((iter * 4 + 2) & 1) ? 0x204A87 : 0x729FCF, "");
+                PutTag(fptr - file + iter * 4 * 3 + 9, 3, 0x000000, ((iter * 4 + 3) & 1) ? 0x204A87 : 0x729FCF, "");
+            }
         }
 
         /// prim attributes
 
         fptr = (char*)part + U32_SWAP(part->attr);
         for (long iter = 0; iter < prim; iter++) {
-            PutTag(fptr - file + iter * 2, fptr - file + iter * 2 + 1,
-                  (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
+            uint16_t clr = U16_SWAP(((uint16_t*)fptr)[iter]);
+            ((VEC_T3FV*)uvbo[3].pdat)[((GLuint*)uvbo[0].pdat)[cind + (iter - prim) * 4 + 3]] = (VEC_T3FV){{
+                1.f / 0x1F * ((clr >> 10) & 0x1F), 1.f / 0x1F * ((clr >> 5) & 0x1F), 1.f / 0x1F * ((clr >> 0) & 0x1F)
+            }};
+            if (xmlOnly)
+                PutTag(fptr - file + iter * 2, 2, (iter) ? 0x000000 : 0x0000FF, (iter & 1) ? 0xFCAF3E : 0xCF5C00, "");
         }
     }
 
-    printf("  </filename>\n</wxHexEditor_XML_TAG>\n");
+    for (long iter = 0; iter * sizeof(GLuint) < uvbo[0].cdat; iter++) {
+        ((GLuint*)uvbo[0].pdat)[iter] = iter;
+    }
+
+    if (xmlOnly)
+        printf("  </filename>\n</wxHexEditor_XML_TAG>\n");
 
     free(file);
-    return GL_QUADS;
 }
 
 
@@ -536,21 +559,65 @@ ENGC *cMakeEngine(char *name, bool xmlOnly) {
     glDepthFunc(GL_LESS);
     glEnable(GL_DEPTH_TEST);
 
-    OGL_UNIF attr[] =
+    OGL_UNIF uvbo[] =
         {{/** indices **/ .draw = GL_STATIC_DRAW},
-         {.name = "vert", .draw = GL_STATIC_DRAW}};
+         {.name = "vert", .draw = GL_STATIC_DRAW},
+         {.name = "norm", .draw = GL_STATIC_DRAW},
+         {.name = "clrs", .draw = GL_STATIC_DRAW}};
 
     OGL_UNIF puni[] =
         {{.name = "mMVP", .type = OGL_UNI_TMFV, .pdat = &retn->view},
-         {.name = "tile", .type = OGL_UNI_T1II, .pdat = (GLvoid*)0}};
+         {.name = "ftrn", .type = OGL_UNI_T3FV, .pdat = &retn->ftrn}};
 
-    GLenum prim = ImportWL3(&attr[0], &attr[1], name);
-    retn->fvbo = OGL_MakeVBO(1, prim, sizeof(attr) / sizeof(*attr), attr,
-                                      sizeof(puni) / sizeof(*puni), puni,
-                                      sizeof(shdr) / sizeof(*shdr), shdr);
-    free(attr[0].pdat);
-    free(attr[1].pdat);
-    *OGL_BindTex(retn->fvbo, 0, OGL_TEX_NSET) = MakeTileTex(9, 5, 1);
+    ImportWL3(uvbo, name, xmlOnly);
+    retn->fvbo = OGL_MakeVBO(0, GL_QUADS, sizeof(uvbo) / sizeof(*uvbo), uvbo, sizeof(puni) / sizeof(*puni), puni,
+                             2, (char*[]){
+                                /** === main vertex shader **/
+                                "#version 150\n"
+
+                                "uniform mat4 mMVP;"
+
+                                /** attributes **/
+                                "attribute vec3 vert;"
+                                "attribute vec3 norm;"
+                                "attribute vec3 clrs;"
+
+                                "uniform vec3 ftrn;"
+
+                                "smooth out vec3 v;"
+                                "flat out vec3 n;"
+                                "flat out vec3 c;"
+
+                                "void main() {"
+                                    "v = -ftrn - vert;"
+                                    "n = norm;"
+                                    "c = clrs;"
+                                    "gl_Position = mMVP * vec4(vert, 1.0);"
+                                "}",
+
+                                /** === main pixel shader **/
+                                "#version 150\n"
+
+                                "uniform sampler2D tile;"
+
+                                "smooth in vec3 v;"
+                                "flat in vec3 n;"
+                                "flat in vec3 c;"
+
+                                "void main() {"
+                                    "const float DEF_ZFAR = %s;"
+                                    "const vec3 lightColor = vec3(1.0, 1.0, 1.0);"
+                                    "const vec3 ambient = vec3(0.1, 0.1, 0.1);"
+                                    "vec3 clr = vec3(1.0, 1.0, 1.0);"
+                                    "float dist = 1.0 - min(dot(v, v), DEF_ZFAR * DEF_ZFAR) / DEF_ZFAR / DEF_ZFAR;"
+                                    "vec3 diffuse = lightColor * clamp(dot(n, normalize(v)), 0.0, 1.0) * dist;"
+                                    "gl_FragColor = clamp(vec4(clr.rgb * (diffuse + ambient), 1.0), 0.0, 1.0);"
+                                "}"}, STRINGIFY(DEF_ZFAR));
+
+    free(uvbo[0].pdat);
+    free(uvbo[1].pdat);
+    free(uvbo[2].pdat);
+    free(uvbo[3].pdat);
 
     if (xmlOnly) {
         cFreeEngine(&retn);
